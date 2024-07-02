@@ -18,20 +18,13 @@ type Config struct {
 	ctx    context.Context
 }
 
-func NewConfig() Config {
+func NewConfig(l *slog.Logger) Config {
 	return Config{
 		h:      http.DefaultServeMux,
 		addr:   ":8080",
 		ctx:    context.Background(),
-		logger: NewLogger(),
+		logger: l,
 	}
-}
-
-type Option func(*Config)
-
-func (c Config) WithLogger(logger *slog.Logger) Config {
-	c.logger = logger
-	return c
 }
 
 func (c Config) WithHandler(h http.Handler) Config {
@@ -53,11 +46,7 @@ type App struct {
 	cfg Config
 }
 
-func NewApp(config Config, o ...Option) *App {
-	for _, opt := range o {
-		opt(&config)
-	}
-
+func NewApp(config Config) *App {
 	return &App{cfg: config}
 }
 
