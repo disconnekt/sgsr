@@ -93,7 +93,7 @@ func (a App) Run() {
 		_ = srv.Shutdown(timeoutCtx) //nolint:contextcheck
 	}()
 
-	a.cfg.logger.Info("status", "listening", "addr", a.cfg.addr)
+	a.cfg.logger.Info("status", "listening addr", a.cfg.addr)
 
 	err := srv.ListenAndServe()
 	if !errors.Is(err, http.ErrServerClosed) {
