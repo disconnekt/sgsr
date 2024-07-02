@@ -12,29 +12,17 @@ import (
 )
 
 type Config struct {
-	h      http.Handler
+	srv    *http.Server
 	logger *slog.Logger
-	addr   string
 	ctx    context.Context
 }
 
-func NewConfig(l *slog.Logger) Config {
+func NewConfig(l *slog.Logger, s *http.Server) Config {
 	return Config{
-		h:      http.DefaultServeMux,
-		addr:   ":8080",
 		ctx:    context.Background(),
 		logger: l,
+		srv:    s,
 	}
-}
-
-func (c Config) WithHandler(h http.Handler) Config {
-	c.h = h
-	return c
-}
-
-func (c Config) WithAddr(addr string) Config {
-	c.addr = addr
-	return c
 }
 
 func (c Config) WithContext(ctx context.Context) Config {
@@ -58,13 +46,6 @@ func (a App) Run() {
 	ctx, stop := signal.NotifyContext(a.cfg.ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	srv := http.Server{
-		WriteTimeout: 15 * time.Second,
-		ReadTimeout:  15 * time.Second,
-		Addr:         a.cfg.addr,
-		Handler:      a.cfg.h,
-	}
-
 	go func() {
 		<-ctx.Done()
 		stop()
@@ -79,12 +60,12 @@ func (a App) Run() {
 		timeoutCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		_ = srv.Shutdown(timeoutCtx) //nolint:contextcheck
+		_ = a.cfg.srv.Shutdown(timeoutCtx) //nolint:contextcheck
 	}()
 
-	a.cfg.logger.Info("status", "listening addr", a.cfg.addr)
+	a.cfg.logger.Info("status", "listening addr", a.cfg.srv.Addr)
 
-	err := srv.ListenAndServe()
+	err := a.cfg.srv.ListenAndServe()
 	if !errors.Is(err, http.ErrServerClosed) {
 		a.cfg.logger.Error(err.Error())
 
