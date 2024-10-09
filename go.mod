@@ -1,4 +1,4 @@
-module github.com/disconnekt/sgsr/v1
+module github.com/disconnekt/sgsr
 
 go 1.23.2
 
