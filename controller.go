@@ -2,9 +2,7 @@ package sgsr
 
 import (
 	"context"
-	"errors"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -20,11 +18,11 @@ type Config struct {
 	addr   string
 }
 
-func NewConfig(l *slog.Logger, a *fiber.App, addr string) Config {
+func NewConfig(l *slog.Logger, app *fiber.App, addr string) Config {
 	return Config{
 		ctx:    context.Background(),
 		logger: l,
-		app:    a,
+		app:    app,
 		addr:   addr,
 	}
 }
@@ -53,23 +51,20 @@ func (a App) Run() {
 	go func() {
 		<-ctx.Done()
 		stop()
-		a.cfg.logger.Info("trying shut down gracefully")
+		a.cfg.logger.Info("Trying to shut down gracefully")
 
 		go func() {
 			time.Sleep(time.Second * 30)
-			a.cfg.logger.Error("exit by shut down timeout")
+			a.cfg.logger.Error("Exit by shut down timeout")
 			os.Exit(3)
 		}()
 
-		timeoutCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		_ = a.cfg.app.ShutdownWithContext(timeoutCtx)
+		_ = a.cfg.app.Shutdown()
 	}()
 
-	a.cfg.logger.Info("status", "listening addr", a.cfg.addr)
+	a.cfg.logger.Info("Status", "Listening addr", a.cfg.addr)
 
-	if err := a.cfg.app.Listen(a.cfg.addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := a.cfg.app.Listen(a.cfg.addr); err != nil {
 		a.cfg.logger.Error(err.Error())
 		panic(err)
 	}
