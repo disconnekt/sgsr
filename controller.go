@@ -9,19 +9,23 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/gofiber/fiber/v2"
 )
 
 type Config struct {
-	srv    *http.Server
+	app    *fiber.App
 	logger *slog.Logger
 	ctx    context.Context
+	addr   string
 }
 
-func NewConfig(l *slog.Logger, s *http.Server) Config {
+func NewConfig(l *slog.Logger, a *fiber.App, addr string) Config {
 	return Config{
 		ctx:    context.Background(),
 		logger: l,
-		srv:    s,
+		app:    a,
+		addr:   addr,
 	}
 }
 
@@ -60,15 +64,13 @@ func (a App) Run() {
 		timeoutCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		_ = a.cfg.srv.Shutdown(timeoutCtx) //nolint:contextcheck
+		_ = a.cfg.app.ShutdownWithContext(timeoutCtx)
 	}()
 
-	a.cfg.logger.Info("status", "listening addr", a.cfg.srv.Addr)
+	a.cfg.logger.Info("status", "listening addr", a.cfg.addr)
 
-	err := a.cfg.srv.ListenAndServe()
-	if !errors.Is(err, http.ErrServerClosed) {
+	if err := a.cfg.app.Listen(a.cfg.addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		a.cfg.logger.Error(err.Error())
-
 		panic(err)
 	}
 }
