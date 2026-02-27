@@ -193,21 +193,25 @@ func preloadEmbeddedAssets(sourceFS fs.FS, encodings []string) (map[string]embed
 	}
 	defer cleanup()
 
-	walkErr := fs.WalkDir(sourceFS, ".", func(file string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+	walkErr := fs.WalkDir(sourceFS, ".", func(file string, entry fs.DirEntry, dirErr error) error {
+		if dirErr != nil {
+			return dirErr
 		}
 		if entry.IsDir() {
 			return nil
 		}
 
-		raw, readErr := fs.ReadFile(sourceFS, file)
-		if readErr != nil {
-			return readErr
+		raw, err := fs.ReadFile(sourceFS, file)
+		if err != nil {
+			return err
 		}
 		key := "/" + strings.TrimPrefix(path.Clean("/"+filepathToURLPath(file)), "/")
-		assets[key], err = buildAsset(raw, file, encodings, compressors)
-		return err
+		asset, err := buildAsset(raw, file, encodings, compressors)
+		if err != nil {
+			return err
+		}
+		assets[key] = asset
+		return nil
 	})
 	if walkErr != nil {
 		return nil, fmt.Errorf("failed to preload static assets: %w", walkErr)
@@ -233,6 +237,10 @@ func buildAsset(raw []byte, file string, encodings []string, compressors map[str
 		compressed, err := compress(raw)
 		if err != nil {
 			return embeddedStaticAsset{}, fmt.Errorf("failed to compress %q with %s: %w", file, encoding, err)
+		}
+		// Keep only effective variants to reduce startup memory footprint.
+		if len(compressed) >= len(raw) {
+			continue
 		}
 		variants[encoding] = compressed
 	}
@@ -272,10 +280,7 @@ func prepareCompressors(encodings []string) (map[string]func([]byte) ([]byte, er
 	compressors[ContentEncodingBrotli] = compressBrotli
 	if zstdEncoder != nil {
 		compressors[ContentEncodingZstd] = func(raw []byte) ([]byte, error) {
-			compressed := zstdEncoder.EncodeAll(raw, make([]byte, 0, len(raw)))
-			out := make([]byte, len(compressed))
-			copy(out, compressed)
-			return out, nil
+			return zstdEncoder.EncodeAll(raw, make([]byte, 0, len(raw))), nil
 		}
 	}
 
@@ -288,8 +293,8 @@ func prepareCompressors(encodings []string) (map[string]func([]byte) ([]byte, er
 }
 
 func compressGzip(raw []byte) ([]byte, error) {
-	var buf bytes.Buffer
-	writer, err := gzip.NewWriterLevel(&buf, gzip.BestCompression)
+	buf := bytes.NewBuffer(make([]byte, 0, len(raw)))
+	writer, err := gzip.NewWriterLevel(buf, gzip.BestCompression)
 	if err != nil {
 		return nil, err
 	}
@@ -304,8 +309,8 @@ func compressGzip(raw []byte) ([]byte, error) {
 }
 
 func compressDeflate(raw []byte) ([]byte, error) {
-	var buf bytes.Buffer
-	writer, err := flate.NewWriter(&buf, flate.BestCompression)
+	buf := bytes.NewBuffer(make([]byte, 0, len(raw)))
+	writer, err := flate.NewWriter(buf, flate.BestCompression)
 	if err != nil {
 		return nil, err
 	}
@@ -320,8 +325,8 @@ func compressDeflate(raw []byte) ([]byte, error) {
 }
 
 func compressBrotli(raw []byte) ([]byte, error) {
-	var buf bytes.Buffer
-	writer := brotli.NewWriterLevel(&buf, brotli.BestCompression)
+	buf := bytes.NewBuffer(make([]byte, 0, len(raw)))
+	writer := brotli.NewWriterLevel(buf, brotli.BestCompression)
 	if _, err := writer.Write(raw); err != nil {
 		_ = writer.Close()
 		return nil, err
@@ -440,6 +445,10 @@ func canonicalEncoding(encoding string) (string, error) {
 }
 
 func negotiateEncoding(header string, preferred []string, variants map[string][]byte) (string, bool) {
+	if len(preferred) == 0 || len(variants) == 0 {
+		return "", false
+	}
+
 	specs := parseAcceptEncoding(header)
 
 	bestEncoding := ""
@@ -483,16 +492,16 @@ func negotiateEncoding(header string, preferred []string, variants map[string][]
 	return ContentEncodingIdentity, true
 }
 
-func (a acceptEncodingSpecs) hasDeclared(encoding string) bool {
-	_, ok := a.declared[encoding]
-	return ok
-}
-
 type acceptEncodingSpecs struct {
 	declared map[string]float64
 	wildcard float64
 	hasValue bool
 	hasAny   bool
+}
+
+func (a acceptEncodingSpecs) hasDeclared(encoding string) bool {
+	_, ok := a.declared[encoding]
+	return ok
 }
 
 func parseAcceptEncoding(header string) acceptEncodingSpecs {

@@ -3,7 +3,9 @@ package sgsr
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
+	"net"
 	"testing"
 	"time"
 
@@ -87,8 +89,8 @@ func TestNewApp_NilApp(t *testing.T) {
 	if result != nil {
 		t.Error("expected nil result for invalid config")
 	}
-	if err.Error() != "fiber app cannot be nil" {
-		t.Errorf("unexpected error message: %v", err)
+	if !errors.Is(err, ErrNilApp) {
+		t.Errorf("unexpected error: %v", err)
 	}
 }
 
@@ -104,8 +106,8 @@ func TestNewApp_NilLogger(t *testing.T) {
 	if result != nil {
 		t.Error("expected nil result for invalid config")
 	}
-	if err.Error() != "logger cannot be nil" {
-		t.Errorf("unexpected error message: %v", err)
+	if !errors.Is(err, ErrNilLogger) {
+		t.Errorf("unexpected error: %v", err)
 	}
 }
 
@@ -146,8 +148,26 @@ func TestNewApp_EmptyAddr(t *testing.T) {
 	if result != nil {
 		t.Error("expected nil result for invalid config")
 	}
-	if err.Error() != "address cannot be empty" {
-		t.Errorf("unexpected error message: %v", err)
+	if !errors.Is(err, ErrEmptyAddr) {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestNewApp_WhitespaceAddr(t *testing.T) {
+	logger := NewLogger()
+	app := fiber.New()
+	config := NewConfig(logger, app, "   ")
+
+	result, err := NewApp(config)
+
+	if err == nil {
+		t.Fatal("expected error for whitespace address")
+	}
+	if result != nil {
+		t.Error("expected nil result for invalid config")
+	}
+	if !errors.Is(err, ErrEmptyAddr) {
+		t.Errorf("unexpected error: %v", err)
 	}
 }
 
@@ -164,8 +184,8 @@ func TestNewApp_InvalidShutdownTimeout(t *testing.T) {
 	if result != nil {
 		t.Error("expected nil result for invalid config")
 	}
-	if err.Error() != "shutdown timeout must be positive" {
-		t.Errorf("unexpected error message: %v", err)
+	if !errors.Is(err, ErrInvalidTimeout) {
+		t.Errorf("unexpected error: %v", err)
 	}
 
 	// Test negative timeout
@@ -178,7 +198,35 @@ func TestNewApp_InvalidShutdownTimeout(t *testing.T) {
 	if result != nil {
 		t.Error("expected nil result for invalid config")
 	}
-	if err.Error() != "shutdown timeout must be positive" {
+	if !errors.Is(err, ErrInvalidTimeout) {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestNewApp_NilContext(t *testing.T) {
+	logger := NewLogger()
+	app := fiber.New()
+	config := NewConfig(logger, app, ":8080").WithContext(nil)
+
+	result, err := NewApp(config)
+	if err == nil {
+		t.Fatal("expected error for nil context")
+	}
+	if result != nil {
+		t.Error("expected nil result for invalid config")
+	}
+	if !errors.Is(err, ErrNilContext) {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestRun_NilApp(t *testing.T) {
+	var app *App
+	err := app.Run()
+	if err == nil {
+		t.Fatal("expected error for nil app")
+	}
+	if !errors.Is(err, ErrNilAppReceiver) {
 		t.Errorf("unexpected error message: %v", err)
 	}
 }
@@ -193,18 +241,85 @@ func TestRun_InvalidPort(t *testing.T) {
 		t.Fatalf("failed to create app: %v", err)
 	}
 
-	// Run should return an error for invalid address
-	done := make(chan error, 1)
-	go func() {
-		done <- appInstance.Run()
-	}()
-
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Error("expected error for invalid port")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("test timed out")
+	// Run should return an error for invalid address.
+	err = appInstance.Run()
+	if err == nil {
+		t.Error("expected error for invalid port")
 	}
 }
+
+func TestRun_CanceledContext(t *testing.T) {
+	logger := NewLogger()
+	app := fiber.New()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	config := NewConfig(logger, app, ":8080").WithContext(ctx)
+	appInstance, err := NewApp(config)
+	if err != nil {
+		t.Fatalf("failed to create app: %v", err)
+	}
+
+	err = appInstance.Run()
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestRun_GracefulShutdown(t *testing.T) {
+	// Reserve an address then release it immediately so the server can bind.
+	// There is a small TOCTOU window, but it is acceptable for a test.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to find free port: %v", err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+
+	fiberApp := fiber.New(fiber.Config{DisableStartupMessage: true})
+	logger := slog.New(slog.NewJSONHandler(noopWriter{}, nil))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := NewConfig(logger, fiberApp, addr).
+		WithContext(ctx).
+		WithShutdownTimeout(5 * time.Second)
+
+	app, err := NewApp(cfg)
+	if err != nil {
+		t.Fatalf("NewApp: %v", err)
+	}
+
+	runErr := make(chan error, 1)
+	go func() { runErr <- app.Run() }()
+
+	// Poll until the server is ready to accept connections.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, dialErr := net.Dial("tcp", addr)
+		if dialErr == nil {
+			conn.Close()
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Trigger graceful shutdown via context cancellation.
+	cancel()
+
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("Run returned unexpected error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return within 10s after cancel")
+	}
+}
+
+// noopWriter discards all log output in tests that don't need it.
+type noopWriter struct{}
+
+func (noopWriter) Write(p []byte) (int, error) { return len(p), nil }

@@ -1,3 +1,3 @@
-# Simple Graceful Sever Runner
+# Simple Graceful Server Runner
 
-Graceful shutdown rapper for server 
+Graceful shutdown wrapper for servers.
